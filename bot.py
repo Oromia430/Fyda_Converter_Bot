@@ -8,30 +8,34 @@ import requests
 from flask import Flask
 import threading
 
-# API TOKENS (Token bot keetii fi Id kee as galchi)
+# API TOKENS (Id kee fi token bot keetii as galchi)
 API_TOKEN = '8974775722:AAEdkBUxx02cwzLLzGT6Fa5hqSWtveqGz6A'  
-ADMIN_CHAT_ID = 123456789  # Elias Telegram Chat ID (Lakkoofsa qofa godhi)
+ADMIN_CHAT_ID = 'YOUR_PERSONAL_TELEGRAM_ID_HERE'  # Elias Telegram Chat ID
 
 bot = telebot.TeleBot(API_TOKEN)
 
 user_lang = {}             
 user_balances = {}         
+user_pending_payments = {}
+
+MY_TELEBIRR = "TeleBirr (Elias Fikadu) • 0913701367"
+MY_CBE = "CBE (Elias Fikadu) • 1000270143788"
 
 MESSAGES = {
     'en': {
         'send_id': "📥 Please send the **Fayda ID** image or screenshot.",
         'processing': "⚙️ Reading FIN/FAN and creating original Layout... Please wait.",
-        'no_credit': "⚠️ You don't have enough credits! Please contact the admin to recharge."
+        'no_credit': "⚠️ You don't have enough credits! Type /topup to buy."
     },
     'am': {
         'send_id': "📥 እባክዎ የመታወቂያውን ፎቶ ወይም ስክሪንሹት ይላኩ።",
         'processing': "⚙️ የ FIN/FAN ቁጥር እያነበብኩና መታወቂያውን እያዘጋጀሁ ነው... ይጠብቁ።",
-        'no_credit': "⚠️ በቂ ክሬዲት የለዎትም! ለመግዛት እባክዎ አስተዳዳሪውን ያነጋግሩ።"
+        'no_credit': "⚠️ በቂ ክሬዲት የለዎትም! ለመግዛት /topup ይፃፉ።"
     },
     'om': {
         'send_id': "📥 Maaloo suuraa ykn screenshot **Fayda ID** keessanii ergaa.",
         'processing': "⚙️ Lakkoofsa FIN/FAN dubbisee kaardii keessan original ijaarbaa jira... Maaloo obsaan eegaa.",
-        'no_credit': "⚠️ Kireditii gahaa hin qabdhan! Maaloo kireditii guuttachuuf Admin dubbisaa."
+        'no_credit': "⚠️ Kireditii gahaa hin qabdhan! Guuttachuuf /topup jedhaa."
     }
 }
 
@@ -39,7 +43,7 @@ MESSAGES = {
 def start_bot(message):
     user_id = message.from_user.id
     if user_id not in user_balances:
-        user_balances[user_id] = 2  # Gift 2 credits for free testing
+        user_balances[user_id] = 2  # Gift 2
         
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
@@ -54,27 +58,69 @@ def handle_lang_selection(call):
     user_id = call.from_user.id
     lang = call.data.split('_')[1]
     user_lang[user_id] = lang
-    bot.send_message(call.message.id, MESSAGES[lang]['send_id'], parse_mode='Markdown')
+    bot.send_message(call.message.chat.id, MESSAGES[lang]['send_id'], parse_mode='Markdown')
 
-# ==================== TO'ANNOO KAFFALTII OFII KEETIIN (ADMIN ADD CREDIT) ====================
-# Ati dhuunfaatti maamila irraa erga kaffaltii fuutee booda Command kanaan kireditii fedaaf:
-# Fakkeenya: /add 12345678 18  (Kun user suniif kireditii 18 kenna)
-@bot.message_handler(commands=['add'])
-def add_credit_manual(message):
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
-    try:
-        parts = message.text.split()
-        target_user = int(parts[1])
-        credits_to_add = int(parts[2])
-        
-        user_balances[target_user] = user_balances.get(target_user, 0) + credits_to_add
-        bot.reply_to(message, f"✅ User `{target_user}` tiif kireditii {credits_to_add} feeteetta!", parse_mode='Markdown')
-        
-        # Maamilaaf ergaa mirkanaa'uu fi kireditii isaa haaraa itti himu gachuu
-        bot.send_message(target_user, f"🎉 **Kafaltiin keessan mirkanaayeera! Kireditiin {credits_to_add} herrega keessanitti dabalameera.**\n• Kireditii hundi: {user_balances[target_user]}")
-    except Exception as e:
-        bot.reply_to(message, "❌ Dogoggora fayyadamaa! Haala kanaan barreessi: `/add UserID Kireditii`", parse_mode='Markdown')
+# ==================== TO'ANNOO KAFALTII (ADMIN VERIFICATION) ====================
+@bot.message_handler(commands=['topup'])
+def topup_menu(message):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton("7 credits — 200 ETB", callback_data="pkg_7_200"),
+        types.InlineKeyboardButton("18 credits — 500 ETB", callback_data="pkg_18_500")
+    )
+    bot.send_message(message.chat.id, "📦 Package Kireditii filadhaa:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('pkg_'))
+def pack_select(call):
+    user_id = call.from_user.id
+    _, credits, price = call.data.split('_')
+    user_pending_payments[user_id] = {'credits': int(credits), 'price': int(price)}
+    
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton(MY_TELEBIRR, callback_data="pay_tele"),
+        types.InlineKeyboardButton(MY_CBE, callback_data="pay_cbe")
+    )
+    bot.send_message(call.message.chat.id, f"🏦 Kafaltii {price} ETB raawwachuuf herrega filadhaa:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('pay_'))
+def bank_select(call):
+    user_id = call.from_user.id
+    pending = user_pending_payments.get(user_id)
+    if not pending: return
+    method = MY_TELEBIRR if call.data == "pay_tele" else MY_CBE
+    msg = bot.send_message(call.message.chat.id, f"💵 Maaloo **{pending['price']} ETB** herrega kanaan ergaa:\n• {method}\n\nErga kaffaltanii booda **Transaction ID** qofa barreessaa nuuf ergaa.", parse_mode='Markdown')
+    bot.register_next_step_handler(msg, send_to_admin_verification)
+
+def send_to_admin_verification(message):
+    user_id = message.from_user.id
+    tx_id = message.text.strip()
+    pending = user_pending_payments.get(user_id)
+    if not pending: return
+    
+    bot.send_message(message.chat.id, "⏳ **Transaction ID keessan mirkanaawaa jira... Admin yeroo gabaabaa keessatti cheek godhee siif fe'a.**", parse_mode='Markdown')
+    
+    admin_markup = types.InlineKeyboardMarkup()
+    admin_markup.add(
+        types.InlineKeyboardButton("Verify ✅ (Kireditii Ergi)", callback_data=f"approve_{user_id}_{pending['credits']}"),
+        types.InlineKeyboardButton("Reject ❌ (Kufisi)", callback_data=f"reject_{user_id}")
+    )
+    bot.send_message(ADMIN_CHAT_ID, f"🔔 **Kafaltii Haaraa dhufe (Cheek Godhi):**\n\n• Maqaa: {message.from_user.first_name}\n• User ID: `{user_id}`\n• Tx ID: `{tx_id}`\n• Kireditii: {pending['credits']} ({pending['price']} ETB)", reply_markup=admin_markup, parse_mode='Markdown')
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('approve_'))
+def admin_approve(call):
+    _, user_id, credits = call.data.split('_')
+    user_id, credits = int(user_id), int(credits)
+    
+    user_balances[user_id] = user_balances.get(user_id, 0) + credits
+    bot.edit_message_text(f"✅ User {user_id} tiif Kireditii {credits} feeteetta. Herregni kee mirkanaa'eera.", call.message.chat.id, call.message.message_id)
+    bot.send_message(user_id, f"🎉 **Kafaltiin keessan Elias'n mirkanaayeera! Kireditiin {credits} dabalameera.** Amma ID keessan erguu dandeessu.", parse_mode='Markdown')
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('reject_'))
+def admin_reject(call):
+    user_id = int(call.data.split('_')[1])
+    bot.edit_message_text(f"❌ Kafaltii User {user_id} kufisteetta (Rejected).", call.message.chat.id, call.message.message_id)
+    bot.send_message(user_id, "❌ **Kafaltiin keessan herrega irratti hin argamne. Maaloo Transaction ID sirrii ta'uu cheek godhaatii deebisaa yaala.**", parse_mode='Markdown')
 
 # ==================== ONLINE OCR ENGINE ====================
 def extract_text_online(image_bytes):
